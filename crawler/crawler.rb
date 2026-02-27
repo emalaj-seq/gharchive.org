@@ -45,6 +45,7 @@ EM.run do
   @latest = []
   @latest_key = lambda { |e| "#{e['id']}" }
   @etags = {}  # Track ETags for each page
+  @files = {}  # Track open file handles per event type
 
   process = Proc.new do
     # First, probe page 1 with conditional GET
@@ -116,22 +117,34 @@ EM.run do
 
           @latest = urls
 
-          # Determine archive filename based on current time, before processing events
+          # Determine archive filename based on current time
           current_processing_time = Time.now
           timestamp = current_processing_time.strftime('%Y-%m-%d-%-k')
-          archive = "data/#{timestamp}.json"
 
-          # Open or rotate file based on the current time's archive path
-          if @file.nil? || (archive != @file.to_path)
-            if !@file.nil?
-              @log.info "Rotating archive. Current: #{@file.to_path}, New: #{archive}"
-              @file.close
+          # Group events by type and write to type-specific files
+          events_by_type = new_events.group_by { |e| e['type'] }
+
+          events_by_type.each do |event_type, events|
+            # Create directory for event type if it doesn't exist
+            type_dir = "data/#{event_type}"
+            Dir.mkdir(type_dir) unless Dir.exist?(type_dir)
+
+            # Determine archive filename for this event type
+            archive = "#{type_dir}/#{timestamp}.json"
+
+            # Open or rotate file for this event type
+            if @files[event_type].nil? || (archive != @files[event_type].to_path)
+              if !@files[event_type].nil?
+                @log.info "Rotating #{event_type} archive. Current: #{@files[event_type].to_path}, New: #{archive}"
+                @files[event_type].close
+              end
+              @files[event_type] = File.new(archive, "a+")
             end
-            @file = File.new(archive, "a+")
-          end
 
-          new_events.each do |event|
-            @file.puts(Yajl::Encoder.encode(Obfuscate.email(event)))
+            # Write events to type-specific file
+            events.each do |event|
+              @files[event_type].puts(Yajl::Encoder.encode(Obfuscate.email(event)))
+            end
           end
 
           remaining = req1.response_header.raw['X-RateLimit-Remaining']

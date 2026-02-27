@@ -1,0 +1,11 @@
+
+services:
+  crawler:
+    build: .
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - STATHATKEY=${STATHATKEY:-test}
+    volumes:
+      - ../data:/app/crawler/data
+      - ./crawler.rb:/app/crawler/crawler.rb
+    restart: unless-stopped
