@@ -64,14 +64,14 @@ EM.run do
         # If page 1 hasn't changed (304 Not Modified), skip this cycle
         if req1.response_header.status == 304
           @log.debug "Page 1 not modified, skipping"
-          EM.add_timer(0.75, &process)
+          EM.add_timer(0.2, &process)
           return
         end
 
-        # Page 1 changed, update ETag and fetch pages 2-5
+        # Page 1 changed, update ETag and fetch pages 2 & 3
         @etags[1] = req1.response_header.etag
 
-        # Fetch pages 2-5 in parallel
+        # Fetch pages 2 and 3 in parallel (GitHub only provides up to 300 events)
         multi = EM::MultiRequest.new
 
         req2 = HttpRequest.new("https://api.github.com/events?per_page=#{PAGE_LIMIT}&page=2", {
@@ -96,49 +96,21 @@ EM.run do
           }.compact
         })
 
-        req4 = HttpRequest.new("https://api.github.com/events?per_page=#{PAGE_LIMIT}&page=4", {
-          :inactivity_timeout => 5,
-          :connect_timeout => 5
-        }).get({
-          :head => {
-            'user-agent' => 'gharchive.org',
-            'Authorization' => 'token ' + ENV['GITHUB_TOKEN'],
-            'If-None-Match' => @etags[4]
-          }.compact
-        })
-
-        req5 = HttpRequest.new("https://api.github.com/events?per_page=#{PAGE_LIMIT}&page=5", {
-          :inactivity_timeout => 5,
-          :connect_timeout => 5
-        }).get({
-          :head => {
-            'user-agent' => 'gharchive.org',
-            'Authorization' => 'token ' + ENV['GITHUB_TOKEN'],
-            'If-None-Match' => @etags[5]
-          }.compact
-        })
-
         multi.add(:page2, req2)
         multi.add(:page3, req3)
-        multi.add(:page4, req4)
-        multi.add(:page5, req5)
 
         multi.callback do
           # Update ETags
           @etags[2] = req2.response_header.etag if req2.response_header.status == 200
           @etags[3] = req3.response_header.etag if req3.response_header.status == 200
-          @etags[4] = req4.response_header.etag if req4.response_header.status == 200
-          @etags[5] = req5.response_header.etag if req5.response_header.status == 200
 
           # Parse all responses
           page1_events = Yajl::Parser.parse(req1.response)
           page2_events = req2.response_header.status == 200 ? Yajl::Parser.parse(req2.response) : []
           page3_events = req3.response_header.status == 200 ? Yajl::Parser.parse(req3.response) : []
-          page4_events = req4.response_header.status == 200 ? Yajl::Parser.parse(req4.response) : []
-          page5_events = req5.response_header.status == 200 ? Yajl::Parser.parse(req5.response) : []
 
-          # Merge all events from the 5 pages
-          latest = page1_events + page2_events + page3_events + page4_events + page5_events
+          # Merge all events from the 3 pages (GitHub's max is 300 events)
+          latest = page1_events + page2_events + page3_events
           urls = latest.collect(&@latest_key)
           new_events = latest.reject {|e| @latest.include? @latest_key.call(e)}
 
@@ -164,15 +136,15 @@ EM.run do
 
           remaining = req1.response_header.raw['X-RateLimit-Remaining']
           reset = Time.at(req1.response_header.raw['X-RateLimit-Reset'].to_i)
-          @log.info "Found #{new_events.size} new events (page1: #{page1_events.size}, page2: #{page2_events.size}, page3: #{page3_events.size}, page4: #{page4_events.size}, page5: #{page5_events.size}), API: #{remaining}, reset: #{reset}"
+          @log.info "Found #{new_events.size} new events (page1: #{page1_events.size}, page2: #{page2_events.size}, page3: #{page3_events.size}), API: #{remaining}, reset: #{reset}"
 
-          if new_events.size >= (PAGE_LIMIT * 5)
-            @log.warn "Potentially missed records - got #{new_events.size} new events (at limit)"
+          if new_events.size >= (PAGE_LIMIT * 3)
+            @log.warn "Potentially missed records - got #{new_events.size} new events (at GitHub's 300 event limit)"
           end
 
           StatHat.new.ez_count('Github Events', new_events.size)
 
-          EM.add_timer(0.75, &process)
+          EM.add_timer(0.2, &process)
         end
 
       rescue Exception => e
